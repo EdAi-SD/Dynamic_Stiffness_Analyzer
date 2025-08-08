@@ -841,17 +841,13 @@ def aplicar_corte(n_clicks, inicio, fin, df_filtrado_json, df_json, señales_sel
 ######################################################################################################################################
                                             # --- Callback para validar masa del martillo ---
 
+from dynamic_stiffness_analyzer.services.validation import (
+    validar_masa_martillo as _validar_masa_martillo,
+)
+
 def validar_masa_martillo(masa):
-    # Valida que la masa del martillo esté en rango físico razonable
-    if masa is None:
-        return 1.0, "Masa no especificada, usando 1.0 kg por defecto"
-    if masa <= 0:
-        return 1.0, "Masa debe ser positiva, usando 1.0 kg por defecto"
-    if masa < CONFIG.LIMITES_FISICOS['MASA_MIN']:
-        return CONFIG.LIMITES_FISICOS['MASA_MIN'], f"Masa muy pequeña ({masa} kg), ajustada a {CONFIG.LIMITES_FISICOS['MASA_MIN']} kg"
-    if masa > CONFIG.LIMITES_FISICOS['MASA_MAX']:
-        return CONFIG.LIMITES_FISICOS['MASA_MAX'], f"Masa muy grande ({masa} kg), ajustada a {CONFIG.LIMITES_FISICOS['MASA_MAX']} kg"
-    return masa, f"Masa del martillo: {masa} kg"
+    # Delegado al módulo de servicios para evitar duplicar lógica
+    return _validar_masa_martillo(masa)
 
 @app.callback(Output('mensaje-masa-martillo', 'children'),
               Input('boton-aplicar-masa', 'n_clicks'),

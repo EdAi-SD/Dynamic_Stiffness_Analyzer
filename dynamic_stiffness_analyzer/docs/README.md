@@ -16,6 +16,7 @@ Dynamic_Stiffness_Analyzer/
       settings.py                      # Configuración centralizada (CONFIG, USAR_CACHE)
     services/
       cache.py                         # Caché computacional LRU (CACHE)
+      validation.py                    # Validaciones de parámetros (p.ej. masa martillo)
     io/
       __init__.py
       loader.py                        # Carga de archivos (CSV/XLSX/TXT Catman)
@@ -39,7 +40,15 @@ Dynamic_Stiffness_Analyzer/
       stiffness_plot.py                # Gráfico de rigidez dinámica (|K| y fase)
       shared.py                        # Figuras vacías, utilidades comunes
     ui/
-      __init__.py                      # (placeholder) aquí irán layout y callbacks
+      __init__.py
+      layout.py                        # Constructor de layout (por ahora reusa el legado)
+      callbacks/
+        __init__.py                    # Importa submódulos para registrar callbacks
+        control.py                     # Cierre de app y overlay de despedida
+        export.py                      # Exportación de datos del Waterfall a ZIP
+        filters.py                     # Callbacks de filtros y duración de segmento
+        cutting.py                     # Callbacks de corte temporal y estado del botón
+        mass.py                        # Validación y estado del control de masa del martillo
 ```
 
 ## Plan de refactorización
@@ -75,6 +84,13 @@ Dynamic_Stiffness_Analyzer/
 - Salidas: resultados en caché, estadísticas.
 
 ### dynamic_stiffness_analyzer/io/loader.py
+### dynamic_stiffness_analyzer/services/validation.py
+- Propósito: Validar parámetros físicos de entrada desde la UI o cálculos.
+- Funciones:
+  - `validar_masa_martillo(masa: float|None) -> Tuple[float, str]`
+    - Entradas: masa del martillo (kg) o `None`.
+    - Salidas: `(masa_validada, mensaje)`; aplica límites de `CONFIG.LIMITES_FISICOS`.
+
 - Propósito: Cargar contenidos subidos desde la UI (dcc.Upload) con autodetección de formato.
 - Funciones:
   - `_detectar_separador(linea: str) -> str`

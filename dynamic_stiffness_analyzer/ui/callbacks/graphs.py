@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 """
-Registro provisional de callbacks: reexporta los callbacks desde el módulo original
-para mantener la funcionalidad mientras terminamos la migración.
+Registro de callbacks principales de gráficos.
+Mientras migramos, seguimos cargando el módulo legado para el callback
+"actualizar_graficos" y otros que aún no se han extraído.
 """
 
 import importlib.util
@@ -31,9 +32,15 @@ def _load_legacy_module():
 
 
 def register_callbacks(app):
-    # En esta fase los callbacks ya están declarados en el módulo original al importarse.
-    # Aquí solo aseguramos que el módulo se cargue (lo cual registra los decorators).
+    # Cargar callbacks del módulo legado (actualizar_graficos y otros aún no migrados)
     _load_legacy_module()
+    # Importar módulos que registran callbacks extraídos (control, export, filtros, corte, masa)
+    # La importación se hace aquí para asegurar que exista una única instancia de app y evitar duplicados.
+    from . import control  # noqa: F401
+    from . import export  # noqa: F401
+    from . import filters  # noqa: F401
+    from . import cutting  # noqa: F401
+    from . import mass  # noqa: F401
     return app
 
 
