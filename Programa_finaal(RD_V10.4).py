@@ -22,6 +22,10 @@ from plotly.subplots import make_subplots
 from scipy.fft import rfft, rfftfreq
 from scipy.signal import get_window, welch, csd, find_peaks, medfilt, butter, filtfilt, firwin, periodogram, sosfiltfilt
 from scipy.stats import median_abs_deviation
+from dynamic_stiffness_analyzer.visualization.shared import (
+    generar_graficos_vacios,
+    generar_figura_vacia,
+)
 
 # Intento de usar configuración modular externa; si falla, se usarán las definiciones locales
 try:
@@ -587,7 +591,7 @@ def cerrar_aplicacion(n_clicks):
         def cerrar():
             time.sleep(1.5)
             os._exit(0)
-        threading.Thread(target=cerrar).start()
+        threading.Thread(target=cerrar, daemon=True).start()
         return 'La aplicación se cerrará en un momento...'
     return ''
 
@@ -821,62 +825,16 @@ from dynamic_stiffness_analyzer.signal_processing.filters import filtrar_senal
 def aplicar_corte(n_clicks, inicio, fin, df_filtrado_json, df_json, señales_seleccionadas):
     if n_clicks is None or (df_filtrado_json is None and df_json is None):
         return no_update, ''
-    if df_filtrado_json:
-        df = pd.read_json(df_filtrado_json, orient='split')
-    else:
-        df = pd.read_json(df_json, orient='split')
-    if inicio is None or fin is None or inicio >= fin:
-        return no_update, 'Rango de corte inválido.'
-    if not señales_seleccionadas:
-        señales_seleccionadas = ['accel_x']
-    min_fft = 4096
-    min_segmentos = 6
-    window_min = 256
-    min_waterfall = min_segmentos * window_min
-    nperseg_welch = 1024
-    min_segments_welch = 6
-    min_welch = nperseg_welch + (min_segments_welch - 1) * int(nperseg_welch * 0.5)
-    min_puntos = max(min_fft, min_waterfall, min_welch)
-    t_min = df['tiempo'].min()
-    t_max = df['tiempo'].max()
-    paso = df['tiempo'].iloc[1] - df['tiempo'].iloc[0] if len(df) > 1 else 0.01
-    ampliado = False
-    inicio_solicitado, fin_solicitado = inicio, fin
-    mask = (df['tiempo'] >= inicio) & (df['tiempo'] <= fin)
-
-    # 1. Ampliar solo el fin hacia adelante
-    fin_temp = fin
-    while mask.sum() < min_puntos and fin_temp < t_max:
-        ampliado = True
-        fin_temp = min(fin_temp + paso, t_max)
-        mask = (df['tiempo'] >= inicio) & (df['tiempo'] <= fin_temp)
-
-    # 2. Si aún no hay suficientes puntos, ampliar el inicio hacia atrás
-    inicio_temp = inicio
-    while mask.sum() < min_puntos and inicio_temp > t_min:
-        ampliado = True
-        inicio_temp = max(inicio_temp - paso, t_min)
-        mask = (df['tiempo'] >= inicio_temp) & (df['tiempo'] <= fin_temp)
-
-    # Usar los valores ampliados
-    inicio, fin = inicio_temp, fin_temp
-    columnas_clave = ['tiempo',
-                      'fuerza',
-                      'accel_x',
-                      'accel_y',
-                      'accel_z']
-    columnas_corte = list(dict.fromkeys(columnas_clave + [col for col in señales_seleccionadas if col in df.columns]))
-    columnas_corte = [col for col in columnas_corte if col in df.columns]
-    df_corte = df.loc[(df['tiempo'] >= inicio) & (df['tiempo'] <= fin), columnas_corte].copy()
-    if df_corte[columnas_corte].dropna(how='all').empty:
-        return no_update, 'No hay datos en el rango seleccionado.'
-    if ampliado:
-        mensaje = (f'Corte solicitado: {inicio_solicitado:.2f} s a {fin_solicitado:.2f} s. '
-                   f'Corte aplicado: {inicio:.2f} s a {fin:.2f} s, {df_corte.shape[0]} puntos. '
-                   '(El rango fue ampliado automáticamente para asegurar el mínimo de puntos necesarios.)')
-    else:
-        mensaje = f'Corte aplicado: {inicio:.2f} s a {fin:.2f} s, {df_corte.shape[0]} puntos.'
-    return df_corte.to_json(date_format='iso', orient='split'), mensaje
+    try:
+        df = pd.read_json(df_filtrado_json or df_json, orient='split')
+    except Exception:
+        return no_update, 'Datos inválidos.'
+    try:
+        from dynamic_stiffness_analyzer.signal_processing.cutting import aplicar_corte_df
+        df_corte, mensaje = aplicar_corte_df(df, inicio, fin, señales_seleccionadas)
+        return df_corte.to_json(date_format='iso', orient='split'), mensaje
+    except Exception as e:
+        return no_update, str(e)
 
 ######################################################################################################################################
 ######################################################################################################################################
@@ -1547,6 +1505,7 @@ def actualizar_graficos(seleccion_multi, seleccion_eje, escala_x, escala_y, curv
     try:
 
         # Usar siempre la función optimizada (maneja automáticamente datasets grandes y pequeños)
+        from dynamic_stiffness_analyzer.visualization.time_plot import generar_grafico_tiempo_optimizado
         fig_tiempo = generar_grafico_tiempo_optimizado(df, seleccion_multi, df_original, filtro_aplicado, df_corte_json)
     except Exception as e:
         print(f"[ERROR] Error generando gráfico de tiempo: {e}")
@@ -1558,7 +1517,8 @@ def actualizar_graficos(seleccion_multi, seleccion_eje, escala_x, escala_y, curv
     try:
 
         # Usar siempre la función adaptativa (maneja automáticamente caché y optimización)
-        fig_fft = generar_grafico_fft_adaptativo(df, seleccion_multi, escala_x, escala_y)
+        from dynamic_stiffness_analyzer.visualization.fft_plot import generar_grafico_fft_optimizado
+        fig_fft = generar_grafico_fft_optimizado(df, seleccion_multi, escala_x, escala_y)
     except Exception as e:
         print(f"[ERROR] Error generando gráfico FFT: {e}")
         fig_fft = generar_figura_vacia("Error en gráfico FFT")
@@ -1580,8 +1540,8 @@ def actualizar_graficos(seleccion_multi, seleccion_eje, escala_x, escala_y, curv
             print("[DEBUG] Caché limpiado forzadamente para aplicar correcciones de waterfall")
 
         # Función que detecta automáticamente si necesita optimización
-        fig_waterfall, datos_waterfall = generar_waterfall_adaptativo(df_waterfall_json, seleccion_eje, escala_x, escala_y,
-                                                                      curvas_enfasis, estado_fijar_vista, duracion_segmento)
+        from dynamic_stiffness_analyzer.visualization.waterfall_plot import generar_waterfall_adaptativo
+        fig_waterfall, datos_waterfall = generar_waterfall_adaptativo(df_waterfall_json, seleccion_eje, escala_x, escala_y, curvas_enfasis, estado_fijar_vista, duracion_segmento)
 
         # Opciones de curvas para el selector
         opciones_curvas = []
@@ -1672,47 +1632,14 @@ def actualizar_graficos(seleccion_multi, seleccion_eje, escala_x, escala_y, curv
                 raise ValueError("Espectros inválidos")
 
             # Estimadores robustos de FRF usando los espectros calculados
-            def calculate_H1(S_ff, S_xf):
-                return S_xf / (S_ff + 1e-12)
+            from dynamic_stiffness_analyzer.analysis.frf import (
+                calculate_H1,
+                calculate_H2,
+                calculate_coherence,
+                calculate_Hv,
+            )
 
-            def calculate_H2(S_xx, S_xf):
-                return S_xx / (np.conj(S_xf) + 1e-12)
-
-            def calculate_coherence(S_ff, S_xx, S_xf):
-                return np.abs(S_xf) ** 2 / (S_ff * S_xx + 1e-12)
-
-            def calculate_Hv(S_ff, S_xx, S_xf):
-                H1 = calculate_H1(S_ff, S_xf)
-                H2 = calculate_H2(S_xx, S_xf)
-                coh = calculate_coherence(S_ff, S_xx, S_xf)
-                
-                # Optimización 75%: umbrales menos restrictivos para coherencia
-                return np.where(coh > 0.8, H1, np.where(coh > 0.5, np.sqrt(H1 * H2), H2))
-
-            def detect_antiresonances(H_frf, frequencies, window_hz=10):
-                try:
-                    H_magnitude_db = 20 * np.log10(np.abs(H_frf) + 1e-12)
-
-                    # Calcular piso de ruido local usando la mediana fuera de los picos principales
-                    peaks, _ = find_peaks(H_magnitude_db, prominence=3)  # Optimización 75%: menos restrictivo
-                    mask_picos = np.zeros_like(H_magnitude_db, dtype=bool)
-                    freq_step = frequencies[1] - frequencies[0] if len(frequencies) > 1 else 1.0
-                    ancho = max(1, int(window_hz / freq_step))
-                    for pk in peaks:
-                        mask_picos[max(0, pk - ancho):min(len(mask_picos), pk + ancho)] = True
-                    noise_floor = np.median(H_magnitude_db[~mask_picos]) if np.any(~mask_picos) else np.median(
-                        H_magnitude_db)
-                    threshold_db = max(-35, noise_floor + 10)  # Optimización 75%: menos restrictivo
-                    antires_mask = H_magnitude_db < threshold_db
-
-                    # Calcular coherencia para filtrar antiresonancias poco fiables
-                    coh = calculate_coherence(S_ff, S_xx, S_xf)
-                    coh_interp = np.interp(frequencies, fK, coh) if len(fK) == len(coh) else coh
-                    antires_mask = antires_mask & (coh_interp > 0.6)  # Optimización 75%: menos restrictivo
-                    return antires_mask, frequencies[antires_mask]
-                except Exception as e:
-                    print(f"[WARNING] Error en detección de antiresonancias: {e}")
-                    return np.zeros_like(frequencies, dtype=bool), np.array([])
+            from dynamic_stiffness_analyzer.analysis.dynamic_stiffness import detect_antiresonances, calculate_dynamic_stiffness_robust
             print(f"[DEBUG] Espectros calculados: fK shape={fK.shape}, S_ff shape={S_ff.shape}")
 
             # Selección del estimador usando las funciones
@@ -1733,39 +1660,11 @@ def actualizar_graficos(seleccion_multi, seleccion_eje, escala_x, escala_y, curv
     if len(fK) > 0 and len(S_ff) > 0:
         try:
 
-            def calculate_dynamic_stiffness_robust(H_frf, frequencies):
-                """
-                Calcula la rigidez dinámica robusta a partir de la FRF y el vector de frecuencias.
-                No requiere la masa si fuerza y aceleración ya están en SI.
-                """
-                try:
-                    antires_mask, _ = detect_antiresonances(H_frf, frequencies)
-                    valid_mask = ~antires_mask & (np.abs(H_frf) > 1e-10)
-                    omega = 2 * np.pi * frequencies[valid_mask]
-                    H_valid = H_frf[valid_mask]
-                    K_dynamic = np.zeros_like(H_frf, dtype=complex)
-
-                    # Fórmula directa: K = -omega^2 / H(f) (ya en Sistema Internacional)
-                    if len(H_valid) > 0:
-                        K_dynamic[valid_mask] = -omega ** 2 / H_valid
-
-                    # Interpolación en zonas de antirresonancia (real e imaginaria por separado)
-                    if np.any(antires_mask) and np.any(valid_mask):
-                        K_dynamic_real_interp = np.interp(frequencies[antires_mask], frequencies[valid_mask],
-                                                          np.real(K_dynamic[valid_mask]))
-                        K_dynamic_imag_interp = np.interp(frequencies[antires_mask], frequencies[valid_mask],
-                                                          np.imag(K_dynamic[valid_mask]))
-                        K_dynamic[antires_mask] = K_dynamic_real_interp + 1j * K_dynamic_imag_interp
-                    return K_dynamic
-                except Exception as e:
-                    print(f"[WARNING] Error en cálculo de rigidez dinámica: {e}")
-                    return np.zeros_like(H_frf, dtype=complex)
-
             # Selección del estimador usando las funciones
             H_frf = calculate_Hv(S_ff, S_xx, S_xf)
 
             # Rigidez dinámica
-            K_disp = calculate_dynamic_stiffness_robust(H_frf, fK)
+            K_disp = calculate_dynamic_stiffness_robust(H_frf, fK, fK, S_ff, S_xx, S_xf)
             magK = np.abs(K_disp)
             phaseK = np.angle(K_disp, deg=True)
 
@@ -1773,6 +1672,7 @@ def actualizar_graficos(seleccion_multi, seleccion_eje, escala_x, escala_y, curv
                                     # --- Visualización de tablas de amortiguamiento ---
 
             try:
+                from dynamic_stiffness_analyzer.analysis.damping import calculo_amortiguamiento
                 resultado_amort = calculo_amortiguamiento(df[seleccion_eje].values, fs, frecuencias_centrales)
                 modos = resultado_amort.get('modos', [])
                 zeta_global = resultado_amort.get('zeta_global', None)
@@ -1878,10 +1778,7 @@ def actualizar_graficos(seleccion_multi, seleccion_eje, escala_x, escala_y, curv
     # Generación del gráfico de rigidez dinámica
     try:
         if fK.size > 0 and S_ff.size > 0 and magK.size > 0 and phaseK.size > 0:
-
-            # Validar que los arrays tienen datos finitos
-            if not (np.isfinite(fK).any() and np.isfinite(S_ff).any() and
-                    np.isfinite(magK).any() and np.isfinite(phaseK).any()):
+            if not (np.isfinite(fK).any() and np.isfinite(S_ff).any() and np.isfinite(magK).any() and np.isfinite(phaseK).any()):
                 raise ValueError("Arrays contienen solo valores no finitos")
             umbral_Sff = max(CONFIG.UMBRALES_DATOS['MIN_AMPLITUD_RUIDO'], CONFIG.UMBRALES_DATOS['FACTOR_UMBRAL_SFF'] * np.max(S_ff[np.isfinite(S_ff)]))
             mask = (fK >= CONFIG.LIMITES_FISICOS['FREQ_MIN']) & (S_ff > umbral_Sff) & np.isfinite(fK) & np.isfinite(S_ff)
@@ -1890,112 +1787,26 @@ def actualizar_graficos(seleccion_multi, seleccion_eje, escala_x, escala_y, curv
             f_plot = fK[mask]
             mag_plot = magK[mask]
             phase_plot = phaseK[mask]
-
-            # Verificar que tenemos datos para graficar
             if len(f_plot) == 0 or not np.isfinite(mag_plot).any():
                 raise ValueError("Sin datos válidos para graficar")
-
-            # Siempre mostrar la rigidez en N/mm, también en dB
-            mag_plot_mm = mag_plot / 1000.0
-            if escala_y == 'db':
-                mag_plot_db = 20 * np.log10(np.maximum(mag_plot_mm, 1e-10))
-
-                # Filtrar valores infinitos en dB
-                valid_db = np.isfinite(mag_plot_db)
-                if not np.any(valid_db):
-                    raise ValueError("Sin valores finitos en escala dB")
-                yaxis_title = '|K| (dB N/mm)'
-                y_plot = mag_plot_db
-            else:
-                yaxis_title = '(N/mm)'
-                y_plot = mag_plot_mm
-
-            # Cambiar el título para reflejar el indicador real
-            indicador_frf = 'Hv'  # Se usa la FRF combinada robusta
-            fig_disp = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.15,
-                                     subplot_titles=(f'|K|', 'Fase (°)'))
-
-            # Añadir traza de magnitud
-            if escala_y == 'db':
-                fig_disp.add_trace(go.Scatter(x=f_plot, y=y_plot, mode='lines',
-                                              name=f'|K| {label_map.get(seleccion_eje, seleccion_eje)} (dB)',
-                                              line=dict(color=color_map.get(seleccion_eje, 'gray'))), row=1, col=1)
-            else:
-                fig_disp.add_trace(go.Scatter(x=f_plot, y=y_plot, mode='lines',
-                                              name=f'|K| {label_map.get(seleccion_eje, seleccion_eje)}',
-                                              line=dict(color=color_map.get(seleccion_eje, 'gray'))), row=1, col=1)
-
-            # Añadir traza de fase
-            fig_disp.add_trace(go.Scatter(x=f_plot, y=phase_plot, mode='lines',
-                                          name=f'∠K {label_map.get(seleccion_eje, seleccion_eje)}',
-                                          line=dict(color=color_map.get(seleccion_eje, 'gray'), dash='dash')), row=2, col=1)
-
-            # Ajustar el rango del eje x a los datos válidos
-            if len(f_plot) > 0:
-                min_f_plot = np.min(f_plot)
-                max_f_plot = np.max(f_plot)
-                fig_disp.update_xaxes(range=[min_f_plot, max_f_plot], row=1, col=1)
-                fig_disp.update_xaxes(range=[min_f_plot, max_f_plot], row=2, col=1)
-
-            # Ajuste automático del eje Y según los datos y la escala
-            # Magnitud (primer subplot)
-            ydata = np.array(y_plot)
-            if ydata.size > 0 and np.any(np.isfinite(ydata)):
-                ymin = np.nanmin(ydata)
-                ymax = np.nanmax(ydata)
-                if np.isfinite(ymin) and np.isfinite(ymax):
-                    margen = CONFIG.TOLERANCIAS['MARGEN_GRAFICO'] * (ymax - ymin) if ymax > ymin else 1
-                    fig_disp.update_yaxes(range=[ymin - margen, ymax + margen], row=1, col=1)
-
-######################################################################################################################################
-                                                        # --- Fase (segundo subplot) ---
-
-            ydata_phase = np.array(phase_plot)
-            if ydata_phase.size > 0 and np.any(np.isfinite(ydata_phase)):
-                ymin_p = np.nanmin(ydata_phase)
-                ymax_p = np.nanmax(ydata_phase)
-                if np.isfinite(ymin_p) and np.isfinite(ymax_p):
-                    margen_p = CONFIG.TOLERANCIAS['MARGEN_GRAFICO'] * (ymax_p - ymin_p) if ymax_p > ymin_p else 1
-                    fig_disp.update_yaxes(range=[ymin_p - margen_p, ymax_p + margen_p], row=2, col=1)
-            fig_disp.update_layout(title_text=f'Rigidez Dinámica {indicador_frf} ({label_map.get(seleccion_eje, seleccion_eje)})',
-                                   xaxis=dict(title='Frecuencia (Hz)', type=escala_x), yaxis=dict(title=yaxis_title),
-                                   yaxis2=dict(title='Fase (°)'), paper_bgcolor='#111111', plot_bgcolor='#111111',
-                                   font=dict(color='white'), height=600)
-            fig_disp.update_xaxes(title_text='Frecuencia (Hz)', row=2, col=1)
-            fig_disp.update_xaxes(showticklabels=True, row=1, col=1)
+            from dynamic_stiffness_analyzer.visualization.stiffness_plot import generar_grafico_rigidez
+            fig_disp = generar_grafico_rigidez(f_plot, mag_plot, phase_plot, seleccion_eje, escala_x, escala_y)
         else:
             raise ValueError("Sin datos válidos para generar gráfico de rigidez")
     except Exception as e:
         print(f"[ERROR] Error generando gráfico de rigidez dinámica: {e}")
+        from dynamic_stiffness_analyzer.visualization.shared import generar_figura_vacia
         fig_disp = generar_figura_vacia("Error en gráfico de rigidez dinámica")
 
 ######################################################################################################################################
                                                     # --- Gráfico de coherencia ROBUSTO ---
 
     try:
-        fig_coherencia = go.Figure()
-
-        # Verificar si tenemos las variables necesarias para coherencia
-        if len(fK) > 0 and 'S_ff' in locals() and 'S_xx' in locals() and 'S_xf' in locals():
-            try:
-
-                # Calcular coherencia usando la función definida arriba (evita dependencia de scope)
-                coh_debug = np.abs(S_xf) ** 2 / (S_ff * S_xx + 1e-12)
-                if coh_debug.size > 0 and np.isfinite(coh_debug).any():
-
-                    # Filtrar valores finitos
-                    valid_coh = np.isfinite(coh_debug) & np.isfinite(fK)
-                    if np.any(valid_coh):
-                        fig_coherencia.add_trace(go.Scatter(x=fK[valid_coh], y=coh_debug[valid_coh], mode='lines+markers',
-                                                            name='Coherencia', line=dict(color='orange')))
-            except Exception as e:
-                print(f"[WARNING] Error calculando coherencia: {e}")
-        fig_coherencia.update_layout(title='Coherencia FRF (Hv)', xaxis_title='Frecuencia (Hz)', yaxis_title='Coherencia',
-                                     yaxis=dict(range=[0, 1.05]), paper_bgcolor='#111111', plot_bgcolor='#111111',
-                                     font=dict(color='white'), height=350, margin=dict(l=80, r=60, t=80, b=160),
-                                     )
+        from dynamic_stiffness_analyzer.visualization.coherence_plot import generar_grafico_coherencia
+        fig_coherencia = generar_grafico_coherencia(fK, S_ff if 'S_ff' in locals() else np.array([]), S_xx if 'S_xx' in locals() else np.array([]), S_xf if 'S_xf' in locals() else np.array([]))
     except Exception as e:
         print(f"[ERROR] Error generando gráfico de coherencia: {e}")
+        from dynamic_stiffness_analyzer.visualization.shared import generar_figura_vacia
         fig_coherencia = generar_figura_vacia("Error en gráfico de coherencia")
 
     # Retorno final con manejo de errores
@@ -2004,121 +1815,11 @@ def actualizar_graficos(seleccion_multi, seleccion_eje, escala_x, escala_y, curv
                 estado_fijar_vista, estilo_fijar, mediana_val, highpass_val, bandpass_multibanda)
     except Exception as e:
         print(f"[ERROR CRÍTICO] Error en retorno final: {e}")
+        from dynamic_stiffness_analyzer.visualization.shared import generar_graficos_vacios
         return generar_graficos_vacios()
 
 ######################################################################################################################################
-                                            # --- Función de cálculo de amortiguamiento ---
-
-def calculo_amortiguamiento(accel, fs, frecuencias_centrales=None, ventana_busqueda_hz=5.0):
-    """
-    Calcula el amortiguamiento modal usando solo la FFT de la aceleración.
-    Si se especifican frecuencias centrales, busca solo en esas bandas y selecciona el pico más relevante.
-    Devuelve una lista de modos (frecuencia, zeta) y mensajes de advertencia.
-    """
-    resultado = {'modos': [],
-                 'zeta_global': None,
-                 'mensajes': []}
-    Nfft = len(accel)
-    accel_fft = np.abs(rfft(accel * get_window('hann', Nfft)))
-    freq_fft = rfftfreq(Nfft, 1 / fs)
-    med_fft = np.median(accel_fft)
-    mad_fft = median_abs_deviation(accel_fft)
-    factor_ruido = 2  # Optimización 75%: menos restrictivo para mejor detección
-    height_fft = med_fft * factor_ruido
-    prominence_fft = mad_fft * factor_ruido
-
-    # Selección de picos
-    if frecuencias_centrales and len(frecuencias_centrales) > 0:
-
-        # Agrupar frecuencias cercanas (ventana_busqueda_hz)
-        frecuencias_centrales = np.sort(np.array(frecuencias_centrales, dtype=float))
-        grupos = []
-        grupo_actual = [frecuencias_centrales[0]]
-        for f in frecuencias_centrales[1:]:
-            if abs(f - grupo_actual[-1]) <= ventana_busqueda_hz:
-                grupo_actual.append(f)
-            else:
-                grupos.append(grupo_actual)
-                grupo_actual = [f]
-        grupos.append(grupo_actual)
-        picos_fft = []
-        for grupo in grupos:
-            f_min = min(grupo) - ventana_busqueda_hz / 2
-            f_max = max(grupo) + ventana_busqueda_hz / 2
-            idx_cerca = np.where((freq_fft >= f_min) & (freq_fft <= f_max))[0]
-            if len(idx_cerca) == 0:
-                continue
-            sub_mag = accel_fft[idx_cerca]
-            if len(sub_mag) == 0:
-                continue
-
-            # Solo el pico más alto de la banda
-            pk, _ = find_peaks(sub_mag, height=height_fft, prominence=prominence_fft, distance=3)
-            if len(pk) == 0:
-                continue
-            pk_max = pk[np.argmax(sub_mag[pk])]
-            picos_fft.append(idx_cerca[pk_max])
-        picos_fft = np.unique(picos_fft).astype(int)
-    else:
-
-        # Detección automática de picos en toda la FFT
-        picos_fft, _ = find_peaks(accel_fft, height=height_fft, prominence=prominence_fft, distance=3)
-        picos_fft = picos_fft.astype(int)
-
-    # Cálculo de amortiguamiento modal (ancho de banda -3dB)
-    for peak in picos_fft:
-        peak_mag = accel_fft[peak]
-        half_power = peak_mag / np.sqrt(2)
-        left = peak
-        while left > 0 and accel_fft[left] > half_power:
-            left -= 1
-        right = peak
-        while right < len(accel_fft) - 1 and accel_fft[right] > half_power:
-            right += 1
-        if left == 0 or right == len(accel_fft) - 1:
-            resultado['mensajes'].append(f"No se pudo estimar el ancho de banda para el modo en {freq_fft[peak]:.2f} Hz.")
-            continue
-        f1 = freq_fft[left]
-        f2 = freq_fft[right]
-        fn = freq_fft[peak]
-        zeta = (f2 - f1) / (2 * fn)
-        if 0 < zeta < 0.5:
-            resultado['modos'].append({'frecuencia': fn, 'zeta': zeta, 'f1': f1, 'f2': f2, 'tipo': 'modal'})
-        else:
-            resultado['mensajes'].append(f"Amortiguamiento no físico o fuera de rango para el modo en {fn:.2f} Hz: zeta={zeta:.4f}")
-
-    # Cálculo opcional de zeta global por decremento logarítmico
-    def damping_least_squares(signal, fs):
-        prominence = 0.05 * (np.max(signal) - np.min(signal))  # Optimización 75%: menos restrictivo
-        peaks, _ = find_peaks(signal, prominence=prominence)
-        if len(peaks) < 2:
-            return None
-        t_peaks = np.array(peaks) / fs
-        vals = np.abs(signal[peaks])
-        N = min(8, len(vals))
-        if N < 2:
-            return None
-        t_peaks = t_peaks[:N]
-        vals = vals[:N]
-        lnA = np.log(vals)
-        periods = np.diff(t_peaks)
-        if np.any(periods <= 0):
-            return None
-        freq = 1 / np.mean(periods)
-        w = 2 * np.pi * freq
-        A = np.vstack([t_peaks, np.ones_like(t_peaks)]).T
-        result = np.linalg.lstsq(A, lnA, rcond=None)
-        slope = result[0][0]
-        zeta = -slope / w
-        if zeta < 0 or zeta > 1:
-            return None
-        return zeta
-    zeta_global = damping_least_squares(accel, fs)
-    resultado['zeta_global'] = zeta_global
-    if zeta_global is None:
-        resultado['mensajes'].append("No se pudo calcular el amortiguamiento global: no se detectaron picos suficientemente prominentes en la señal en el tiempo.")
-    resultado['zeta_fisico'] = None
-    return resultado
+                                            # --- (Amortiguamiento extraído a analysis/damping.py) ---
 
 ######################################################################################################################################
                                             # --- Optimizaciones para datasheets grandes ---
@@ -2172,84 +1873,8 @@ def mostrar_progreso_simple(mensaje, puntos_totales, puntos_finales=None):
 ######################################################################################################################################
 ######################################################################################################################################
 ######################################################################################################################################
-                                                # -- Sistema de caché computacional --
-
-class CacheComputacional:
-    """
-    Sistema de caché inteligente para optimizar cálculos costosos como FFT y waterfall.
-    Utiliza hashing de parámetros para detectar cálculos repetidos y evitar recálculos innecesarios.
-    """
-
-    def __init__(self, max_cache_size=50):
-        self.cache = {}
-        self.cache_access_times = {}
-        self.max_cache_size = max_cache_size
-        self.hits = 0
-        self.misses = 0
-
-    def generar_hash_parametros(self, *args, **kwargs):
-
-        # Genera un hash único basado en los parámetros de entrada
-        try:
-
-            # Convertir todos los parámetros a string para el hash
-            parametros_str = f"{args}_{sorted(kwargs.items())}"
-            return hashlib.md5(parametros_str.encode()).hexdigest()
-        except:
-
-            # Fallback si hay problemas con el hashing
-            return None
-
-    def obtener_de_cache(self, cache_key):
-
-        # Obtiene un resultado del caché si existe
-        if cache_key and cache_key in self.cache:
-            self.cache_access_times[cache_key] = datetime.now()
-            self.hits += 1
-            return self.cache[cache_key]
-        else:
-            self.misses += 1
-            return None
-
-    def guardar_en_cache(self, cache_key, resultado):
-
-        # Guarda un resultado en el caché con política LRU
-        if not cache_key:
-            return
-
-        # Si el caché está lleno, eliminar el elemento menos reciente
-        if len(self.cache) >= self.max_cache_size:
-
-            # Encontrar la clave con el tiempo de acceso más antiguo
-            oldest_key = min(self.cache_access_times.keys(),
-                             key=lambda k: self.cache_access_times[k])
-            del self.cache[oldest_key]
-            del self.cache_access_times[oldest_key]
-
-        # Guardar el nuevo resultado
-        self.cache[cache_key] = resultado
-        self.cache_access_times[cache_key] = datetime.now()
-
-    def limpiar_cache(self):
-
-        # Limpia todo el caché
-        self.cache.clear()
-        self.cache_access_times.clear()
-        self.hits = 0
-        self.misses = 0
-
-    def estadisticas_cache(self):
-
-        # Retorna estadísticas del caché
-        total_requests = self.hits + self.misses
-        hit_rate = (self.hits / total_requests * 100) if total_requests > 0 else 0
-        return {'hits': self.hits,
-                'misses': self.misses,
-                'hit_rate': hit_rate,
-                'cache_size': len(self.cache)}
-
-# Instancia global del caché
-cache_computacional = CacheComputacional()
+                                                # -- Sistema de caché computacional (servicio global) --
+from dynamic_stiffness_analyzer.services.cache import CACHE as cache_computacional
 
 def generar_grafico_tiempo_optimizado(df, seleccion_multi, df_original=None, filtro_aplicado=False, df_corte_json=None):
     """
@@ -2675,22 +2300,15 @@ def generar_waterfall_con_cache(df_json, seleccion_eje, escala_x, escala_y, curv
                                             duracion_segmento)
 
 def limpiar_cache_si_necesario(forzar=False):
-
     # Limpia el caché cuando sea necesario para liberar memoria.
-    global cache_computacional
     try:
         stats = cache_computacional.estadisticas_cache()
-
-        # Limpiar si el caché está lleno o si se fuerza
         if forzar or stats['cache_size'] >= cache_computacional.max_cache_size * 0.9:
             cache_computacional.limpiar_cache()
             print(f"[CACHE] Caché limpiado. Estadísticas previas: {stats}")
             return True
-
-        # Mostrar estadísticas si hay actividad
         if stats['hits'] + stats['misses'] > 0:
-            print(
-                f"[CACHE] Stats: {stats['hits']} hits, {stats['misses']} misses, {stats['hit_rate']:.1f}% hit rate, {stats['cache_size']} entradas")
+            print(f"[CACHE] Stats: {stats['hits']} hits, {stats['misses']} misses, {stats['hit_rate']:.1f}% hit rate, {stats['cache_size']} entradas")
         return False
     except Exception as e:
         print(f"[CACHE] Error al limpiar caché: {e}")
@@ -2951,7 +2569,7 @@ def habilitar_cache():
 
 def deshabilitar_cache():
     # Deshabilita el sistema de caché y limpia el caché actual
-    global USAR_CACHE, cache_computacional
+    global USAR_CACHE
     USAR_CACHE = False
     cache_computacional.limpiar_cache()
     print("[CACHE] Sistema de caché deshabilitado y limpiado")
@@ -3025,5 +2643,5 @@ if __name__ == '__main__':
     print("[WATERFALL] Bypass activo - rango completo 0 Hz a fs/2 garantizado")
 
     webbrowser.open_new("http://127.0.0.1:8050")
-    app.run(debug=True)
+    app.run(debug=False, use_reloader=False)
 
